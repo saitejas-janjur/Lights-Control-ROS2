@@ -1,0 +1,9 @@
+# SetFloat.srv
+
+# The request part:
+float32 data
+
+---
+# The response part:
+bool success
+string message

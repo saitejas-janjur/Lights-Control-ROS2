@@ -3,7 +3,10 @@
 
 import rclpy
 from rclpy.node import Node
-from std_srvs.srv import SetBool
+
+# Import your newly generated service from the same package
+from bluerov2_control.srv import SetFloat
+
 from mavros_msgs.msg import OverrideRCIn
 
 class LightControlService(Node):
@@ -12,75 +15,80 @@ class LightControlService(Node):
 
         # Declare parameters with default values
         self.declare_parameter('light_channel', 9)
-        self.declare_parameter('light_on_value', 1500)
-        self.declare_parameter('light_off_value', 1100)
+        self.declare_parameter('light_min_pwm', 1100)
+        self.declare_parameter('light_max_pwm', 1900)  # or 2000, depending on your hardware
 
         # Retrieve parameters
         self.light_channel = self.get_parameter('light_channel').get_parameter_value().integer_value
-        self.light_on_value = self.get_parameter('light_on_value').get_parameter_value().integer_value
-        self.light_off_value = self.get_parameter('light_off_value').get_parameter_value().integer_value
+        self.light_min_pwm = self.get_parameter('light_min_pwm').get_parameter_value().integer_value
+        self.light_max_pwm = self.get_parameter('light_max_pwm').get_parameter_value().integer_value
 
-        # Create the service
-        self.srv = self.create_service(SetBool, 'light_control', self.handle_light_control)
-        self.get_logger().info("Light control service is ready.")
+        # Create the service using our new SetFloat type
+        self.srv = self.create_service(SetFloat, 'light_control', self.handle_light_control)
+        self.get_logger().info("Light control service (SetFloat) is ready.")
 
         # Publisher to /mavros/rc/override
         self.rc_override_pub = self.create_publisher(OverrideRCIn, '/mavros/rc/override', 10)
 
-        # Initialize a reusable OverrideRCIn message (channels all 0 = no override)
+        # Initialize RC override message (no override for all channels)
         self.rc_override_msg = OverrideRCIn()
         self.rc_override_msg.channels = [0] * 18
 
     def handle_light_control(self, request, response):
         """
-        Service callback for turning the light on/off. 
-        Publishes RC override exactly once and then returns.
+        Service callback for setting light brightness [0..100].
+        If 0 -> off, if 1..100 -> scaled brightness.
         """
-        if request.data:
-            # Turn light on
-            self.override_rc(self.light_channel, self.light_on_value)
-            response.success = True
-            response.message = "Light turned on (single RC override published)"
-            self.get_logger().info("Light turned on via single RC override.")
+        brightness = request.data  # float in [0..100], though we clamp below if outside
+
+        # Clamp brightness
+        if brightness < 0.0:
+            brightness = 0.0
+        elif brightness > 100.0:
+            brightness = 100.0
+
+        # Compute PWM from brightness
+        # 0% -> light_min_pwm, 100% -> light_max_pwm
+        pwm_value = int(self.light_min_pwm + (brightness / 100.0) * (self.light_max_pwm - self.light_min_pwm))
+
+        # Override channel
+        self.override_rc(self.light_channel, pwm_value)
+
+        # Populate response
+        response.success = True
+        if brightness == 0.0:
+            response.message = f"Light turned off (PWM={pwm_value})."
         else:
-            # Turn light off
-            self.override_rc(self.light_channel, self.light_off_value)
-            response.success = True
-            response.message = "Light turned off (single RC override published)"
-            self.get_logger().info("Light turned off via single RC override.")
-        
+            response.message = f"Light set to {brightness}% brightness (PWM={pwm_value})."
+
+        self.get_logger().info(response.message)
         return response
 
     def override_rc(self, channel, value):
-        """
-        Set (and publish) a single RC override PWM value for the specified channel.
-        Only published once.
-        """
-        # Validate channel
+        """Publish one RC override message to set the PWM on a single channel."""
         if not (1 <= channel <= 18):
             self.get_logger().error(f"Invalid RC channel: {channel}. Must be between 1 and 18.")
             return
         
-        # Modify the channel in the override message
         self.rc_override_msg.channels[channel - 1] = value
 
-        # Publish immediately (one-shot)
+        # One-shot publish
         self.rc_override_pub.publish(self.rc_override_msg)
-        self.get_logger().debug(f"Published single RC Override on channel {channel}: {value}")
+        self.get_logger().debug(f"Published RC Override on channel {channel}: {value}")
 
-        # Optionally revert the channel back to 0 (no override) immediately after:
+        # Optional: revert to 0 immediately so we don't block other inputs
         # self.rc_override_msg.channels[channel - 1] = 0
         # self.rc_override_pub.publish(self.rc_override_msg)
 
 def main(args=None):
     rclpy.init(args=args)
-    light_control_service = LightControlService()
+    node = LightControlService()
     try:
-        rclpy.spin(light_control_service)
+        rclpy.spin(node)
     except KeyboardInterrupt:
-        light_control_service.get_logger().info("Light control service stopped by user.")
+        node.get_logger().info("Light control service stopped by user.")
     finally:
-        light_control_service.destroy_node()
+        node.destroy_node()
         rclpy.shutdown()
 
 if __name__ == '__main__':
