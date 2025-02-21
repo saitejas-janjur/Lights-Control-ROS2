@@ -16,7 +16,7 @@ class LightControlService(Node):
         # Declare parameters with default values
         self.declare_parameter('light_channel', 9)
         self.declare_parameter('light_min_pwm', 1100)
-        self.declare_parameter('light_max_pwm', 1900)  # or 2000, depending on your hardware
+        self.declare_parameter('light_max_pwm', 2100)  # or 2000, depending on your hardware
 
         # Retrieve parameters
         self.light_channel = self.get_parameter('light_channel').get_parameter_value().integer_value

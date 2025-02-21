@@ -19,6 +19,7 @@
   <!-- Runtime dependencies -->
   <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <!-- Other runtime deps for your code -->
   <depend>rclpy</depend>
@@ -29,7 +30,7 @@
   <export>
     <build_type>ament_cmake</build_type>
     <!-- CRITICAL: Mark the package as an interface package -->
-    <member_of_group>rosidl_interface_packages</member_of_group>
+    <!-- <member_of_group>rosidl_interface_packages</member_of_group> -->
   </export>
 
 </package>

@@ -39,7 +39,7 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 {'light_channel': 9},
-                {'light_on_value': 1500},
+                {'light_on_value': 2100},
                 {'light_off_value': 1100}
             ]
         ),
