@@ -5,7 +5,7 @@ import rclpy
 from rclpy.node import Node
 
 # Import your newly generated service from the same package
-from bluerov2_control.srv import SetFloat
+from bluerov2_control.srv import SetLight
 
 from mavros_msgs.msg import OverrideRCIn
 
@@ -16,16 +16,16 @@ class LightControlService(Node):
         # Declare parameters with default values
         self.declare_parameter('light_channel', 9)
         self.declare_parameter('light_min_pwm', 1100)
-        self.declare_parameter('light_max_pwm', 2100)  # or 2000, depending on your hardware
+        self.declare_parameter('light_max_pwm', 2100) 
 
         # Retrieve parameters
         self.light_channel = self.get_parameter('light_channel').get_parameter_value().integer_value
         self.light_min_pwm = self.get_parameter('light_min_pwm').get_parameter_value().integer_value
         self.light_max_pwm = self.get_parameter('light_max_pwm').get_parameter_value().integer_value
 
-        # Create the service using our new SetFloat type
-        self.srv = self.create_service(SetFloat, 'light_control', self.handle_light_control)
-        self.get_logger().info("Light control service (SetFloat) is ready.")
+        # Create the service using our new SetLight type
+        self.srv = self.create_service(SetLight, 'light_control', self.handle_light_control)
+        self.get_logger().info("Light control service (SetLight) is ready.")
 
         # Publisher to /mavros/rc/override
         self.rc_override_pub = self.create_publisher(OverrideRCIn, '/mavros/rc/override', 10)

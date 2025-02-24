@@ -1,0 +1,7 @@
+# SetLight.srv
+
+# The request part:
+float32 data
+---
+bool success
+string message

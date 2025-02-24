@@ -19,7 +19,7 @@ find_package(mavros_msgs REQUIRED)
 # 1) Generate the .srv interfaces
 #
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/SetFloat.srv"  # relative path from 'srv' folder
+  "srv/SetLight.srv"  # relative path from 'srv' folder
   DEPENDENCIES builtin_interfaces
 )
 
