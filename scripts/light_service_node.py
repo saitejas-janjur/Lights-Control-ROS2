@@ -36,20 +36,20 @@ class LightControlService(Node):
 
     def handle_light_control(self, request, response):
         """
-        Service callback for setting light brightness [0..100].
-        If 0 -> off, if 1..100 -> scaled brightness.
+        Service callback for setting light brightness [0..1].
+        If 0 -> off, if 1.0 -> full brightness, values in between get scaled.
         """
-        brightness = request.data  # float in [0..100], though we clamp below if outside
+        brightness = request.data  # float in [0..1]
 
-        # Clamp brightness
+        # Clamp brightness to [0..1]
         if brightness < 0.0:
             brightness = 0.0
-        elif brightness > 100.0:
-            brightness = 100.0
+        elif brightness > 1.0:
+            brightness = 1.0
 
         # Compute PWM from brightness
-        # 0% -> light_min_pwm, 100% -> light_max_pwm
-        pwm_value = int(self.light_min_pwm + (brightness / 100.0) * (self.light_max_pwm - self.light_min_pwm))
+        # 0.0 -> light_min_pwm, 1.0 -> light_max_pwm
+        pwm_value = int(self.light_min_pwm + brightness * (self.light_max_pwm - self.light_min_pwm))
 
         # Override channel
         self.override_rc(self.light_channel, pwm_value)
@@ -59,7 +59,7 @@ class LightControlService(Node):
         if brightness == 0.0:
             response.message = f"Light turned off (PWM={pwm_value})."
         else:
-            response.message = f"Light set to {brightness}% brightness (PWM={pwm_value})."
+            response.message = f"Light set to {brightness:.2f} (scaled to {pwm_value} PWM)."
 
         self.get_logger().info(response.message)
         return response
