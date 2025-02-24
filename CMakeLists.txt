@@ -33,6 +33,7 @@ ament_export_dependencies(rosidl_default_runtime)
 #
 install(PROGRAMS
   scripts/light_service_node.py
+  scripts/fade_lights.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
