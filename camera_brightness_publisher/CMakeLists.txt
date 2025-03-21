@@ -7,9 +7,10 @@ find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
-# Install your Python module/scripts
+# Mark the camera_brightness_publisher/ directory as a Python package
 ament_python_install_package(${PROJECT_NAME})
 
+# Install your script(s)
 install(
   PROGRAMS
     scripts/camera_brightness_node.py
