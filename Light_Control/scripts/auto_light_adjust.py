@@ -1,171 +1,134 @@
 #!/usr/bin/env python3
-"""
-auto_light_adjust.py
-
-This script captures frames from the robot’s camera (via OpenCV),
-calculates brightness, and calls the 'light_control' service to
-increase/decrease light brightness via RC override.
-"""
+# auto_light_adjustment_node_no_opencv.py
 
 import rclpy
 from rclpy.node import Node
-import cv2
 import numpy as np
 import time
 
-# Import the custom service definition from your package
+from sensor_msgs.msg import Image
 from bluerov2_control.srv import SetLight
 
-# Configuration Parameters
-TARGET_BRIGHTNESS = 75.0      # Desired grayscale brightness (0..255)
-UPDATE_INTERVAL   = 3.0       # Time interval in seconds between updates
+# Desired brightness in [0..255] (typical for an 8-bit grayscale)
+TARGET_BRIGHTNESS = 75
 
-# PID Gains (tune these values to get stable performance)
-Kp = 0.01  # Proportional gain
-Ki = 0.0005  # Integral gain
-Kd = 0.001  # Derivative gain
+# Update interval in seconds
+UPDATE_INTERVAL = 3.0
 
-# For safety, clamp integral to avoid "windup"
-INTEGRAL_LIMIT = 1000.0
-
-class AutoLightAdjustNode(Node):
-    """
-    ROS2 node that:
-      1) Opens the camera with OpenCV,
-      2) Periodically measures brightness,
-      3) Uses a PID controller to compute a new light level (0..1),
-      4) Calls the 'light_control' service to apply that light level via RC override.
-    """
-
+class AutoBrightnessControlNodeNoOpenCV(Node):
     def __init__(self):
-        super().__init__('auto_light_adjust')
+        super().__init__('auto_brightness_control_no_opencv_node')
 
-        # Create a client for the SetLight service
+        # Subscribe to the camera feed on /camera/image (bgr8 encoding)
+        self.subscription = self.create_subscription(
+            Image,
+            '/camera/image',
+            self.image_callback,
+            10
+        )
+        self.subscription  # prevent unused variable warning
+
+        # Create a client for calling the light_control service
         self.client = self.create_client(SetLight, 'light_control')
-
-        # Wait until the 'light_control' service is available
         while not self.client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("'light_control' service not available. Waiting...")
+            self.get_logger().info('Waiting for /light_control service...')
 
-        # Open the default camera (index=0)
-        self.cap = cv2.VideoCapture(0)
-        if not self.cap.isOpened():
-            self.get_logger().error("Error: Cannot access the camera.")
-            raise RuntimeError("Camera not accessible.")
+        self.last_update_time = time.time()
+        # Start with a mid‐range light level
+        self.current_light_setting = 0.5
 
-        # Current "commanded" light level in [0.0, 1.0]
-        # Start with something moderate, e.g. 0.5
-        self.current_light_level = 0.5
+        self.get_logger().info("Auto Brightness Control (No OpenCV) Node started.")
 
-        # PID State
-        self.pid_integral = 0.0       # Integral of the error
-        self.pid_last_error = 0.0     # For derivative calculation
-        self.last_update_time = time.time()  # For scheduling brightness updates
-        self.prev_time = self.last_update_time  # For derivative dt
-
-    def spin_camera_loop(self):
+    def image_callback(self, msg: Image):
         """
-        Main loop that reads frames, computes brightness, and calls service periodically.
+        Called whenever a new image is received.
+        We'll parse the BGR data manually with NumPy, compute brightness,
+        and adjust lights if needed.
         """
-        while rclpy.ok():
-            ret, frame = self.cap.read()
-            if not ret:
-                self.get_logger().error("Error: Failed to grab frame from camera.")
-                break
+        # 1) Convert msg.data (bytes) → NumPy array
+        #    BGR8 means each pixel = 3 bytes: [Blue, Green, Red]
+        #    The total size = height * width * 3.
+        bgr_array = np.frombuffer(msg.data, dtype=np.uint8)
 
-            # Calculate mean brightness (grayscale average)
-            current_brightness = self.calculate_brightness(frame)
+        # 2) Reshape to (height, width, 3)
+        if msg.height > 0 and msg.width > 0:
+            bgr_array = bgr_array.reshape((msg.height, msg.width, 3))
+        else:
+            self.get_logger().error("Invalid image dimensions.")
+            return
 
-            # Check if it's time to update the lights
-            now = time.time()
-            if now - self.last_update_time >= UPDATE_INTERVAL:
-                self.update_pid_control(current_brightness, now)
-                self.last_update_time = now
+        # 3) Compute brightness.
+        #    Option A: simple average of all channels
+        #       brightness = np.mean(bgr_array)
+        #
+        #    Option B: approximate 'grayscale' brightness using a standard formula:
+        #       gray = 0.114B + 0.587G + 0.299R
+        #       brightness = average of all gray pixels
+        #    We'll use Option B:
+        blue  = bgr_array[:, :, 0].astype(np.float32)
+        green = bgr_array[:, :, 1].astype(np.float32)
+        red   = bgr_array[:, :, 2].astype(np.float32)
+        gray = 0.114 * blue + 0.587 * green + 0.299 * red
+        current_brightness = np.mean(gray)
 
-            # Display the camera feed (optional)
-            cv2.imshow("Camera Feed", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        # Check if enough time has passed to adjust lights
+        now = time.time()
+        if (now - self.last_update_time) >= UPDATE_INTERVAL:
+            self.adjust_lights(current_brightness)
+            self.last_update_time = now
 
-            # Allow ROS2 events (e.g., service responses) to be processed
-            rclpy.spin_once(self, timeout_sec=0.01)
-
-        self.cap.release()
-        cv2.destroyAllWindows()
-
-    def calculate_brightness(self, frame):
+    def adjust_lights(self, current_brightness):
         """
-        Compute the average brightness of the image (0..255).
+        A basic proportional controller to nudge the light setting [0..1]
+        toward TARGET_BRIGHTNESS.
         """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        return np.mean(gray)
+        diff = TARGET_BRIGHTNESS - current_brightness
 
-    def update_pid_control(self, current_brightness, current_time):
-        """
-        Perform one cycle of PID control:
-          error = (target - measured)
-          integral += error * dt
-          derivative = (error - last_error) / dt
-          output = Kp*error + Ki*integral + Kd*derivative
-        Then clamp output to [0..1], call the light_control service.
-        """
-        # Calculate dt
-        dt = current_time - self.prev_time
-        self.prev_time = current_time
+        # We can scale the difference by 1/255 to normalize, then multiply
+        # by some factor (e.g., 0.5) to prevent huge jumps.
+        adjustment = (diff / 255.0) * 0.5
 
-        # PID Error
-        error = TARGET_BRIGHTNESS - current_brightness
+        # Update our stored light setting, clamping to [0..1].
+        new_setting = self.current_light_setting + adjustment
+        new_setting = min(max(new_setting, 0.0), 1.0)
+        self.current_light_setting = new_setting
 
-        # Integral term
-        self.pid_integral += error * dt
-        # Clamp integral to avoid windup
-        if self.pid_integral > INTEGRAL_LIMIT:
-            self.pid_integral = INTEGRAL_LIMIT
-        elif self.pid_integral < -INTEGRAL_LIMIT:
-            self.pid_integral = -INTEGRAL_LIMIT
-
-        # Derivative term
-        derivative = (error - self.pid_last_error) / dt if dt > 0 else 0.0
-
-        # PID Output
-        pid_output = (Kp * error) + (Ki * self.pid_integral) + (Kd * derivative)
-
-        # Update "last error"
-        self.pid_last_error = error
-
-        # Update current_light_level (0.0..1.0) with PID command
-        self.current_light_level += pid_output
-        # Clamp to [0, 1]
-        if self.current_light_level > 1.0:
-            self.current_light_level = 1.0
-        elif self.current_light_level < 0.0:
-            self.current_light_level = 0.0
-
-        # Log info
         self.get_logger().info(
-            f"\nCurrent brightness: {current_brightness:.2f}, Error: {error:.2f}\n"
-            f"PID Output: {pid_output:.4f}, Light Level: {self.current_light_level:.2f}"
+            f"Current brightness={current_brightness:.2f}, "
+            f"New light setting={new_setting:.2f}"
         )
 
-        # Call the SetLight service with the new brightness
+        # Call the existing service to set the new brightness
+        self.call_light_service(new_setting)
+
+    def call_light_service(self, brightness_value):
+        """
+        Sends a request to the /light_control service with brightness [0..1].
+        """
         request = SetLight.Request()
-        request.data = float(self.current_light_level)
-        self.client.call_async(request)
+        request.data = float(brightness_value)
+
+        future = self.client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            resp = future.result()
+            if resp.success:
+                self.get_logger().info(f"Light service responded: {resp.message}")
+            else:
+                self.get_logger().warn(f"Light service reported failure: {resp.message}")
+        else:
+            self.get_logger().error("Light service call failed with no result.")
 
 def main(args=None):
     rclpy.init(args=args)
-    node = None
+    node = AutoBrightnessControlNodeNoOpenCV()
     try:
-        node = AutoLightAdjustNode()
-        node.spin_camera_loop()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    except RuntimeError as e:
-        print(f"Runtime error: {e}")
     finally:
-        if node is not None:
-            node.destroy_node()
+        node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
