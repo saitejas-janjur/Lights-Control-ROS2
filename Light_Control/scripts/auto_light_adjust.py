@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# auto_light_adjustment_node_no_opencv.py
+# auto_light_adjust.py (with PID control)
 
 import rclpy
 from rclpy.node import Node
@@ -11,9 +11,22 @@ from bluerov2_control.srv import SetLight
 # Desired brightness in [0..255]
 TARGET_BRIGHTNESS = 75
 
-class AutoBrightnessControlNodeNoOpenCV(Node):
+# ======= PID GAINS =======
+Kp = 0.10
+Ki = 0.02
+Kd = 0.05
+# =========================
+
+# Integral windup clamp (prevent integral from growing unbounded)
+INTEGRAL_MIN = -300.0
+INTEGRAL_MAX =  300.0
+
+# Timer period in seconds
+TIMER_PERIOD = 1.0
+
+class AutoBrightnessControlPIDNode(Node):
     def __init__(self):
-        super().__init__('auto_brightness_control_no_opencv_node')
+        super().__init__('auto_brightness_control_pid_node')
 
         # Subscribe to the camera feed on /camera/image (bgr8 encoding)
         self.subscription = self.create_subscription(
@@ -23,23 +36,26 @@ class AutoBrightnessControlNodeNoOpenCV(Node):
             10
         )
 
-        # Create a client for calling the light_control service
+        # Create a client for calling the SetLight service
         self.client = self.create_client(SetLight, 'light_control')
         while not self.client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /light_control service...')
 
-        # Store the most recent brightness reading
+        # Initialize brightness reading
         self.current_brightness = 0.0
 
-        # Initialize the light setting in [0..1]
+        # Initialize the PID terms
+        self.integral_error = 0.0
+        self.prev_error = 0.0
+
+        # Start halfway
         self.current_light_setting = 0.5
         self.send_light_command(self.current_light_setting)
 
         # Create a timer that fires every 3 seconds to adjust lights
-        self.timer_period = 3.0  # seconds
-        self.timer = self.create_timer(self.timer_period, self.timer_callback)
+        self.timer = self.create_timer(TIMER_PERIOD, self.timer_callback)
 
-        self.get_logger().info("Auto Brightness Control (No OpenCV) Node started.")
+        self.get_logger().info("Auto Brightness Control (PID) Node started.")
 
     def image_callback(self, msg: Image):
         """
@@ -63,31 +79,55 @@ class AutoBrightnessControlNodeNoOpenCV(Node):
         red   = bgr_array[:, :, 2].astype(np.float32)
         gray = 0.114 * blue + 0.587 * green + 0.299 * red
 
-        # Store the average brightness for the timer
+        # Store the average brightness
         self.current_brightness = float(np.mean(gray))
 
     def timer_callback(self):
         """
-        Fired every 3 seconds, uses the latest brightness reading 
-        to adjust the light level proportionally.
+        Fired every 3 seconds. Uses PID to adjust the light level
+        based on the difference between target and measured brightness.
         """
-        # Current brightness last computed in image_callback
-        diff = TARGET_BRIGHTNESS - self.current_brightness
+        # Current error
+        error = TARGET_BRIGHTNESS - self.current_brightness
 
-        # Proportional factor (tune as needed)
-        adjustment = (diff / 255.0) * 0.5
+        # -- Proportional term --
+        P_term = Kp * error
 
-        # Calculate new light setting in [0..1]
-        new_setting = self.current_light_setting + adjustment
+        # -- Integral term (with basic anti-windup clamp) --
+        self.integral_error += error * TIMER_PERIOD
+        # clamp the integral to prevent runaway
+        if self.integral_error > INTEGRAL_MAX:
+            self.integral_error = INTEGRAL_MAX
+        elif self.integral_error < INTEGRAL_MIN:
+            self.integral_error = INTEGRAL_MIN
+        I_term = Ki * self.integral_error
+
+        # -- Derivative term --
+        derivative = (error - self.prev_error) / TIMER_PERIOD
+        D_term = Kd * derivative
+
+        # Sum the PID terms
+        pid_output = P_term + I_term + D_term
+
+        # Update for next cycle
+        self.prev_error = error
+
+        # Current_light_setting is what we want in [0..1].
+        # We'll interpret pid_output as an *increment* or *delta* for the current setting
+        # (or you could interpret it as an absolute fraction directly).
+        new_setting = self.current_light_setting + (pid_output / 255.0)
+
+        # Make sure it's in [0, 1]
         new_setting = min(max(new_setting, 0.0), 1.0)
 
         # Only send an update if there's a noticeable change
-        # (this is optional – remove if you want constant commands)
         if abs(new_setting - self.current_light_setting) > 1e-3:
             self.current_light_setting = new_setting
             self.get_logger().info(
-                f"[Timer] Brightness={self.current_brightness:.2f}, "
-                f"Light setting={new_setting:.2f}"
+                f"[Timer] Measured={self.current_brightness:.2f}, "
+                f"Error={error:.2f}, "
+                f"PID_out={pid_output:.2f}, "
+                f"Light={new_setting:.2f}"
             )
             self.send_light_command(new_setting)
 
@@ -99,8 +139,6 @@ class AutoBrightnessControlNodeNoOpenCV(Node):
         request.data = brightness_value
 
         future = self.client.call_async(request)
-        # We do not block here with spin_until_future_complete() to avoid
-        # deadlocks in a timer callback. Instead, we can attach a callback:
         future.add_done_callback(self.light_service_response)
 
     def light_service_response(self, future):
@@ -123,7 +161,7 @@ class AutoBrightnessControlNodeNoOpenCV(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = AutoBrightnessControlNodeNoOpenCV()
+    node = AutoBrightnessControlPIDNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
