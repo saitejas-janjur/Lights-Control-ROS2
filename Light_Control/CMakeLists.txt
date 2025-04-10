@@ -35,6 +35,7 @@ install(PROGRAMS
   scripts/light_service_node.py
   scripts/fade_lights.py
   scripts/auto_light_adjust.py
+  scripts/publish_light_recommendation.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
