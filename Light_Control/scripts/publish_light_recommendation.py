@@ -78,19 +78,16 @@ class PublishLightRecommendationNode(Node):
         new_setting = self.current_recommendation + adjustment
         new_setting = min(max(new_setting, 0.0), 1.0)
 
-        # Only publish if there's a noticeable change
-        if abs(new_setting - self.current_recommendation) > 1e-3:
-            self.current_recommendation = new_setting
-            self.get_logger().info(
-                f"[Timer] Measured brightness={self.current_brightness:.2f}, "
-                f"Recommended light={new_setting:.2f}"
-            )
+        self.current_recommendation = new_setting
+        self.get_logger().info(
+            f"[Timer] Measured brightness={self.current_brightness:.2f}, "
+            f"Recommended light={new_setting:.2f}"
+        )
 
-            # Publish the new recommendation on /mavros/light_brightness
-            msg = Float32()
-            msg.data = float(new_setting)
-            self.brightness_pub.publish(msg)
-
+        # Publish the new recommendation on /mavros/light_brightness
+        msg = Float32()
+        msg.data = float(new_setting)
+        self.brightness_pub.publish(msg)
 
 def main(args=None):
     rclpy.init(args=args)
